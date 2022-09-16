@@ -18,7 +18,7 @@ module Docx
   #     puts d.text
   #   end
   class Document
-    attr_reader :xml, :doc, :zip, :styles
+    attr_reader :xml, :doc, :zip, :styles, :settings
 
     def initialize(path_or_io, options = {})
       @replace = {}
@@ -36,6 +36,7 @@ module Docx
       @document_xml = document.get_input_stream.read
       @doc = Nokogiri::XML(@document_xml)
       load_styles
+      load_settings
       yield(self) if block_given?
     ensure
       @zip.close
@@ -186,6 +187,14 @@ module Docx
       @rels = Nokogiri::XML(@rels_xml)
     end
 
+    def load_settings
+      @settings_xml = @zip.read('word/settings.xml')
+      @settings = Nokogiri::XML(@settings_xml)
+    rescue Errno::ENOENT => e
+      warn e.message
+      nil
+    end
+
     #--
     # TODO: Flesh this out to be compatible with other files
     # TODO: Method to set flag on files that have been edited, probably by inserting something at the
@@ -193,6 +202,7 @@ module Docx
     #++
     def update
       replace_entry 'word/document.xml', doc.serialize(save_with: 0)
+      replace_entry 'word/settings.xml', settings.serialize(save_with: 0) if @settings
     end
 
     # generate Elements::Containers::Paragraph from paragraph XML node

@@ -10,7 +10,8 @@ module Docx
         DEFAULT_FORMATTING = {
           italic:    false,
           bold:      false,
-          underline: false
+          underline: false,
+          strike: false
         }
 
         def self.tag
@@ -60,7 +61,8 @@ module Docx
           {
             italic:    !@node.xpath('.//w:i').empty?,
             bold:      !@node.xpath('.//w:b').empty?,
-            underline: !@node.xpath('.//w:u').empty?
+            underline: !@node.xpath('.//w:u').empty?,
+            strike: !@node.xpath('.//w:strike').empty?
           }
         end
 
@@ -73,6 +75,7 @@ module Docx
           html = @text
           html = html_tag(:em, content: html) if italicized?
           html = html_tag(:strong, content: html) if bolded?
+          html = html_tag(:s, content: html) if striked?
           styles = {}
           styles['text-decoration'] = 'underline' if underlined?
           # No need to be granular with font size down to the span level if it doesn't vary.
@@ -90,12 +93,20 @@ module Docx
           @formatting[:bold]
         end
 
+        def striked?
+          @formatting[:strike]
+        end
+
         def underlined?
           @formatting[:underline]
         end
 
         def hyperlink?
-          @node.name == 'hyperlink'
+          @node.name == 'hyperlink' && external_link?
+        end
+
+        def external_link?
+          !@node.attributes['id'].nil?
         end
 
         def href
@@ -107,8 +118,11 @@ module Docx
         end
 
         def font_size
-          size_tag = @node.xpath('w:rPr//w:sz').first
-          size_tag ? size_tag.attributes['val'].value.to_i / 2 : @font_size
+          size_attribute = @node.at_xpath('w:rPr//w:sz//@w:val')
+
+          return @font_size unless size_attribute
+
+          size_attribute.value.to_i / 2
         end
 
         private

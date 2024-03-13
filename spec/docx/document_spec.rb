@@ -7,7 +7,7 @@ require 'tempfile'
 describe Docx::Document do
   before(:all) do
     @fixtures_path = 'spec/fixtures'
-    @formatting_line_count = 13 # number of lines the formatting.docx file has
+    @formatting_line_count = 15 # number of lines the formatting.docx file has
   end
 
   describe '#open' do
@@ -16,6 +16,33 @@ describe Docx::Document do
         expect do
           Docx::Document.open(@fixtures_path + '/office365.docx')
         end.to_not raise_error
+      end
+    end
+
+    context 'When reading a un-supported file' do
+      it 'should throw file not supported error' do
+        expect do
+          Docx::Document.open(@fixtures_path + '/invalid_format.pdf')
+        end.to raise_error(Errno::EIO, 'Input/output error - Invalid file format')
+      end
+
+      it 'should throw file not found error' do
+        invalid_path = @fixtures_path + '/invalid_file_path.docx'
+        expect do
+          Docx::Document.open(invalid_path)
+        end.to raise_error(Zip::Error, "File #{invalid_path} not found")
+      end
+    end
+  end
+
+  describe "#inspect" do
+    it "isn't too long" do
+      doc = Docx::Document.open(@fixtures_path + '/office365.docx')
+
+      expect(doc.inspect.length).to be < 1000
+
+      doc.instance_variables.each do |var|
+        expect(doc.inspect).to match(/#{var}/)
       end
     end
   end
@@ -332,12 +359,15 @@ describe Docx::Document do
 
     context 'wps modified docx file' do
       before { @doc = Docx::Document.open(@fixtures_path + '/saving_wps.docx') }
+
       it 'should save to a normal file path' do
         @new_doc_path = @fixtures_path + '/new_save.docx'
         @doc.save(@new_doc_path)
         @new_doc = Docx::Document.open(@new_doc_path)
         expect(@new_doc.paragraphs.size).to eq(@doc.paragraphs.size)
       end
+
+      after { File.delete(@new_doc_path) if File.exist?(@new_doc_path) }
     end
   end
 
@@ -367,6 +397,7 @@ describe Docx::Document do
       @span_regex = /(\<span).+((?<=\>)\w+)(<\/span>)/
       @em_regex = /(\<em).+((?<=\>)\w+)(\<\/em\>)/
       @strong_regex = /(\<strong).+((?<=\>)\w+)(\<\/strong\>)/
+      @strike_regex = /(\<s).+((?<=\>)\w+)(\<\/s\>)/
       @anchor_tag_regex = /\<a href="(.+)" target="_blank"\>(.+)\<\/a>/
     end
 
@@ -394,6 +425,18 @@ describe Docx::Document do
     it 'should underline underlined text' do
       scan = @doc.paragraphs[3].to_html.scan(/\<span\s+([^\>]+)/).flatten
       expect(scan.first).to eq 'style="text-decoration:underline;"'
+    end
+
+    it 'should strike striked text' do
+      scan = @doc.paragraphs[13].to_html.scan(@strike_regex).flatten
+      expect(scan.first).to eq '<s'
+      expect(scan.last).to eq '</s>'
+      expect(scan[1]).to eq 'Strike'
+    end
+
+    it 'should color the text' do
+      scan = @doc.paragraphs[14].to_html.scan(/\<p\s+([^\>]+)/).flatten
+      expect(scan.first).to eq 'style="font-size:11pt;color:#FF0000;"'
     end
 
     it 'should justify paragraphs' do
@@ -487,6 +530,172 @@ describe Docx::Document do
     end
     it 'returns a String' do
       expect(doc.to_s).to be_a(String)
+    end
+  end
+
+  describe 'reading and manipulating paragraph style' do
+    before do
+      @doc = Docx::Document.open(@fixtures_path + '/styles.docx')
+    end
+
+    it 'read default style when not' do
+      nb = @doc.paragraphs.size
+
+      expect(@doc.paragraphs.map(&:style)).to eq([
+        "Title",
+        "Subtitle",
+        "Author",
+        "Date",
+        "Compact",
+        "Heading 1",
+        "Heading 2",
+        "Heading 3",
+        "Heading 4",
+        "Heading 5",
+        "Heading 6",
+        "Heading 7",
+        "Heading 8",
+        "Heading 9",
+        "First Paragraph",
+        "Body Text",
+        "Block Text",
+        "Table Caption",
+        "Image Caption",
+        "Definition Term",
+        "Definition",
+        "Definition Term",
+        "Definition",
+      ])
+
+      expect(@doc.paragraphs.map(&:style_id)).to eq([
+        "Title",
+        "Subtitle",
+        "Author",
+        "Date",
+        "Compact",
+        "Heading1",
+        "Heading2",
+        "Heading3",
+        "Heading4",
+        "Heading5",
+        "Heading6",
+        "Heading7",
+        "Heading8",
+        "Heading9",
+        "FirstParagraph",
+        "BodyText",
+        "BlockText",
+        "TableCaption",
+        "ImageCaption",
+        "DefinitionTerm",
+        "Definition",
+        "DefinitionTerm",
+        "Definition",
+      ])
+    end
+
+    it 'set paragraph style' do
+      nb = @doc.paragraphs.size
+      expect(nb).to eq 23
+
+      @doc.paragraphs.each do |p|
+        p.style = 'Heading 1'
+        expect(p.style).to eq 'Heading 1'
+      end
+
+      @doc.paragraphs.each do |p|
+        p.style_id = 'Heading2'
+        expect(p.style).to eq 'Heading 2'
+      end
+    end
+
+    it 'raises if invalid paragraph style' do
+      expect { @doc.paragraphs.first.style = 'invalid' }.to raise_error(Docx::Errors::StyleNotFound)
+    end
+  end
+
+  describe 'reading and manipulating document styles' do
+    before do
+      @doc = Docx::Document.open(@fixtures_path + '/styles.docx')
+    end
+
+    it '#default_paragraphy_style' do
+      expect(@doc.default_paragraph_style).to eq 'Normal'
+    end
+
+    it 'manipulates existing document styles' do
+      styles_config = @doc.styles_configuration
+
+      expect(styles_config.size).to eq 37
+
+      heading_style = styles_config.style_of('Normal')
+      expect(heading_style).to be_a(Docx::Elements::Style)
+
+      expect(heading_style.id).to eq "Normal"
+      expect(heading_style.font_color).to eq(nil)
+
+      heading_style.font_color = "000000"
+      expect(heading_style.font_color).to eq("000000")
+
+      expect(heading_style.node.at_xpath("w:rPr/w:color/@w:val").value).to eq("000000")
+    end
+
+    it 'creates document styles' do
+      styles_config = @doc.styles_configuration
+
+      expect(styles_config.size).to eq 37
+      expect { styles_config.style_of('Red') } .to raise_error(Docx::Errors::StyleNotFound)
+
+      red_style = styles_config.add_style("Red")
+      expect(styles_config.size).to eq 38
+
+      expect(red_style).to be_a(Docx::Elements::Style)
+      expect(red_style.id).to eq "Red"
+      expect(red_style.name).to eq "Red"
+
+      expect { red_style.font_color = "#FFFFFF" }.to raise_error(Docx::Errors::StyleInvalidPropertyValue)
+      expect { red_style.font_color = "blue" }.to raise_error(Docx::Errors::StyleInvalidPropertyValue)
+      expect { red_style.font_color = "FF0000" }.not_to raise_error
+
+      styles_config.remove_style("Red")
+      expect(styles_config.size).to eq 37
+      expect { styles_config.style_of('Red') }.to raise_error(Docx::Errors::StyleNotFound)
+    end
+
+    it 'persists document styles' do
+      styles_config = @doc.styles_configuration
+      styles_config.add_style("Red", name: "Red", font_color: "FF0000", font_size: 20)
+      @doc.paragraphs[5].style = "Red"
+
+      first_modified_styles_path = @fixtures_path + '/styles_modified.docx'
+      second_modified_styles_path = @fixtures_path + '/styles_modified2.docx'
+      @doc.save(first_modified_styles_path)
+
+      modified_styles_doc = Docx::Document.open(first_modified_styles_path)
+      modified_styles_config = modified_styles_doc.styles_configuration
+
+      expect(modified_styles_config.style_of('Red')).to be_a(Docx::Elements::Style)
+      modified_styles_config.remove_style("Red")
+      modified_styles_doc.save(second_modified_styles_path)
+
+      modified_styles_doc = Docx::Document.open(second_modified_styles_path)
+      modified_styles_config = modified_styles_doc.styles_configuration
+      expect { modified_styles_config.style_of('Red') }.to raise_error(Docx::Errors::StyleNotFound)
+
+      File.delete(first_modified_styles_path)
+      File.delete(second_modified_styles_path)
+    end
+
+    after { File.delete(@new_doc_path) if @new_doc_path && File.exist?(@new_doc_path) }
+  end
+
+  describe '#to_html' do
+    before do
+      @doc = Docx::Document.open(@fixtures_path + '/internal-links.docx')
+    end
+
+    it 'should not raise error' do
+      expect { @doc.to_html }.to_not raise_error
     end
   end
 end

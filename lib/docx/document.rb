@@ -1,5 +1,7 @@
 require 'docx/containers'
 require 'docx/elements'
+require 'docx/errors'
+require 'docx/helpers'
 require 'nokogiri'
 require 'zip'
 
@@ -18,6 +20,9 @@ module Docx
   #     puts d.text
   #   end
   class Document
+
+    include Docx::SimpleInspect
+    
     attr_reader :xml, :doc, :zip, :styles, :settings
 
     def initialize(path_or_io, options = {})
@@ -25,6 +30,7 @@ module Docx
 
       # if path-or_io is string && does not contain a null byte
       if (path_or_io.instance_of?(String) && !/\u0000/.match?(path_or_io))
+        raise Errno::EIO.new('Invalid file format') if !File.extname(path_or_io).eql?('.docx')
         @zip = Zip::File.open(path_or_io)
       else
         @zip = Zip::File.open_buffer(path_or_io)
@@ -39,7 +45,7 @@ module Docx
       load_settings
       yield(self) if block_given?
     ensure
-      @zip.close
+      @zip.close unless @zip.nil?
     end
 
     # This stores the current global document properties, for now
@@ -82,10 +88,11 @@ module Docx
     # Some documents have this set, others don't.
     # Values are returned as half-points, so to get points, that's why it's divided by 2.
     def font_size
-      return nil unless @styles
+      size_value = @styles&.at_xpath('//w:docDefaults//w:rPrDefault//w:rPr//w:sz/@w:val')&.value
 
-      size_tag = @styles.xpath('//w:docDefaults//w:rPrDefault//w:rPr//w:sz').first
-      size_tag ? size_tag.attributes['val'].value.to_i / 2 : nil
+      return nil unless size_value
+
+      size_value.to_i / 2
     end
 
     # Hyperlink targets are extracted from the document.xml.rels file
@@ -130,13 +137,11 @@ module Docx
           next unless entry.file?
 
           out.put_next_entry(entry.name)
+          value = @replace[entry.name] || zip.read(entry.name)
 
-          if @replace[entry.name]
-            out.write(@replace[entry.name])
-          else
-            out.write(zip.read(entry.name))
-          end
+          out.write(value)
         end
+
       end
       zip.close
     end
@@ -166,6 +171,18 @@ module Docx
 
     def replace_entry(entry_path, file_contents)
       @replace[entry_path] = file_contents
+    end
+
+    def default_paragraph_style
+      @styles.at_xpath("w:styles/w:style[@w:type='paragraph' and @w:default='1']/w:name/@w:val").value
+    end
+
+    def style_name_of(style_id)
+      styles_configuration.style_of(style_id).name
+    end
+
+    def styles_configuration
+      @styles_configuration ||= Elements::Containers::StylesConfiguration.new(@styles.dup)
     end
 
     private
@@ -202,12 +219,13 @@ module Docx
     #++
     def update
       replace_entry 'word/document.xml', doc.serialize(save_with: 0)
+      replace_entry 'word/styles.xml', styles_configuration.serialize(save_with: 0)
       replace_entry 'word/settings.xml', settings.serialize(save_with: 0) if @settings
     end
 
     # generate Elements::Containers::Paragraph from paragraph XML node
     def parse_paragraph_from(p_node)
-      Elements::Containers::Paragraph.new(p_node, document_properties)
+      Elements::Containers::Paragraph.new(p_node, document_properties, self)
     end
 
     # generate Elements::Bookmark from bookmark XML node

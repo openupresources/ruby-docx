@@ -20,10 +20,9 @@ module Docx
   #     puts d.text
   #   end
   class Document
-
     include Docx::SimpleInspect
-    
-    attr_reader :xml, :doc, :zip, :styles, :settings
+
+attr_reader :xml, :doc, :zip, :styles, :settings, :headers, :footers
 
     def initialize(path_or_io, options = {})
       @replace = {}
@@ -41,6 +40,8 @@ module Docx
 
       @document_xml = document.get_input_stream.read
       @doc = Nokogiri::XML(@document_xml)
+      @headers = fetch_headers
+      @footers = fetch_footers
       load_styles
       load_settings
       yield(self) if block_given?
@@ -75,6 +76,20 @@ module Docx
       bkmrks_ary.reject! { |b| b.name == '_GoBack' }
       bkmrks_ary.each { |b| bkmrks_hsh[b.name] = b }
       bkmrks_hsh
+    end
+
+    def fetch_headers
+      @zip.glob('word/header*.xml').map do |entry|
+        header_xml = entry.get_input_stream.read
+        Nokogiri::XML(header_xml)
+      end
+    end
+
+    def fetch_footers
+      @zip.glob('word/footer*.xml').map do |entry|
+        footer_xml = entry.get_input_stream.read
+        Nokogiri::XML(footer_xml)
+      end
     end
 
     def to_xml
@@ -221,6 +236,12 @@ module Docx
       replace_entry 'word/document.xml', doc.serialize(save_with: 0)
       replace_entry 'word/styles.xml', styles_configuration.serialize(save_with: 0)
       replace_entry 'word/settings.xml', settings.serialize(save_with: 0) if @settings
+      headers.each_with_index do |header, index|
+        replace_entry "word/header#{index + 1}.xml", header.serialize(:save_with => 0) if header
+      end
+      footers.each_with_index do |footer, index|
+        replace_entry "word/footer#{index + 1}.xml", footer.serialize(:save_with => 0) if footer
+      end
     end
 
     # generate Elements::Containers::Paragraph from paragraph XML node
